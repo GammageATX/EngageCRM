@@ -6,6 +6,7 @@ from datetime import datetime
 import sqlite3
 import os
 import pandas as pd
+from outlook_example import import_emails_as_engagements
 
 
 class EngagementTracker:
@@ -366,6 +367,13 @@ class EngagementTracker:
             command=self.edit_engagement
         )
         edit_btn.pack(side='left', padx=5)
+
+        import_btn = ttk.Button(
+            btn_frame,
+            text="Import from Outlook",
+            command=self.import_outlook_emails
+        )
+        import_btn.pack(side='left', padx=5)
 
         # Treeview for engagements
         cols = (
@@ -2069,6 +2077,159 @@ class EngagementTracker:
         
         for review in self.cursor.fetchall():
             self.reviews_tree.insert('', 'end', values=review)
+
+    def import_outlook_emails(self):
+        """Import emails from Outlook folder as engagements"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Import Outlook Emails")
+        dialog.geometry("800x600")
+        
+        # Folder selection
+        folder_frame = ttk.Frame(dialog)
+        folder_frame.pack(fill='x', padx=5, pady=5)
+        
+        ttk.Label(
+            folder_frame,
+            text="Outlook folder name:"
+        ).pack(side='left', padx=5)
+        
+        folder_entry = ttk.Entry(folder_frame)
+        folder_entry.insert(0, "Python Emails")
+        folder_entry.pack(side='left', fill='x', expand=True, padx=5)
+        
+        # Preview area
+        preview_frame = ttk.LabelFrame(dialog, text="Preview")
+        preview_frame.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        preview_text = tk.Text(preview_frame, wrap='word', height=20)
+        preview_text.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        def preview_import():
+            folder_name = folder_entry.get()
+            try:
+                engagements = import_emails_as_engagements(folder_name)
+                
+                preview = ["Email Import Preview:", ""]
+                for i, eng in enumerate(engagements, 1):
+                    preview.extend([
+                        f"Email {i}:",
+                        f"Date: {eng['date_time']}",
+                        f"Type: {eng['type']}",
+                        f"Unit: {eng['unit'] or 'Unknown'}",
+                        f"Participants: {', '.join(eng['participants'])}",
+                        f"Attachments: {len(eng['attachments'])}",
+                        "Summary: " + eng['summary'][:100] + "...",
+                        "-" * 50,
+                        ""
+                    ])
+                
+                preview_text.delete(1.0, tk.END)
+                preview_text.insert(1.0, "\n".join(preview))
+                
+            except Exception as e:
+                messagebox.showerror(
+                    "Preview Error",
+                    f"Error previewing emails: {str(e)}"
+                )
+        
+        # Button frame
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.pack(fill='x', padx=5, pady=5)
+        
+        ttk.Button(
+            btn_frame,
+            text="Preview",
+            command=preview_import
+        ).pack(side='left', padx=5)
+        
+        ttk.Button(
+            btn_frame,
+            text="Import",
+            command=lambda: self.do_import(folder_entry.get())
+        ).pack(side='left', padx=5)
+
+    def do_import(self, folder_name):
+        """Import emails from the specified folder into engagements."""
+        try:
+            engagements = import_emails_as_engagements(folder_name)
+            
+            imported = 0
+            for eng in engagements:
+                # Get or create unit if specified
+                unit_id = None
+                if eng['unit']:
+                    self.cursor.execute(
+                        "SELECT id FROM units WHERE name=?",
+                        (eng['unit'],)
+                    )
+                    result = self.cursor.fetchone()
+                    if result:
+                        unit_id = result[0]
+                    else:
+                        self.cursor.execute(
+                            "INSERT INTO units (name, type) VALUES (?, ?)",
+                            (eng['unit'], 'Unknown')
+                        )
+                        unit_id = self.cursor.lastrowid
+                
+                # Insert engagement
+                self.cursor.execute('''
+                    INSERT INTO engagements (
+                        date_time, type, unit_id, summary,
+                        status, action_items
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (
+                    eng['date_time'],
+                    eng['type'],
+                    unit_id,
+                    eng['summary'],
+                    eng['status'],
+                    eng['action_items']
+                ))
+                
+                engagement_id = self.cursor.lastrowid
+                
+                # Add participants
+                for participant in eng['participants']:
+                    # Check if researcher exists
+                    self.cursor.execute(
+                        "SELECT id FROM researchers WHERE name=?",
+                        (participant,)
+                    )
+                    result = self.cursor.fetchone()
+                    if result:
+                        researcher_id = result[0]
+                    else:
+                        # Create new researcher
+                        self.cursor.execute(
+                            "INSERT INTO researchers (name) VALUES (?)",
+                            (participant,)
+                        )
+                        researcher_id = self.cursor.lastrowid
+                    
+                    # Link researcher to engagement
+                    self.cursor.execute('''
+                        INSERT INTO engagement_participants (
+                            engagement_id, researcher_id
+                        )
+                        VALUES (?, ?)
+                    ''', (engagement_id, researcher_id))
+                
+                imported += 1
+            
+            self.conn.commit()
+            self.refresh_engagements()
+            messagebox.showinfo(
+                "Import Complete",
+                f"Successfully imported {imported} engagements"
+            )
+            
+        except Exception as e:
+            messagebox.showerror(
+                "Import Error",
+                f"Error importing emails: {str(e)}"
+            )
 
     def run(self):
         """Start the application"""
